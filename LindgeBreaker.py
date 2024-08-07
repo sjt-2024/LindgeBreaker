@@ -3,6 +3,7 @@
 本程序使用MPL2.0开源协议
 程序说明:
     凌极爆破者/LindgeBreaker 是针对凌极机房控制系统受控端开发的爆破工具,可以让受控端HAPPY.
+    为了防止本程序大规模扩散,管理员可以紧急爆破客户端.
     程序开发环境:Python 3.12.2
 '''
 import ttkbootstrap as ttk
@@ -18,6 +19,7 @@ import os
 import sys
 import queue
 import pickle as pkl
+import socket
 
 # 处理sys.path
 # 获取当前文件的绝对路径
@@ -40,39 +42,46 @@ auth_path = os.path.join(current_directory, 'auth.txt')
 class LindgeBreaker:
     """
     凌极爆破者核心类，负责管理应用程序的主要功能和用户界面。
-    Methods:
-    --------
-    __init__(self, root):
-        初始化方法，设置主窗口属性，读取进程列表，验证授权码，创建控件，并启动队列处理线程。
-    center_window(self):
-        将主窗口居中显示。
-    process_status_queue(self):
-        处理状态队列，将队列中的消息更新到状态栏。
-    validate_auth_code(self):
-        验证授权码，确保用户有权限运行程序。
-    create_widgets(self):
-        创建用户界面控件，包括按钮、状态栏和版权信息声明。
-    update_status(self, message):
-        更新状态栏，显示消息。
-    processBreaker(self, process_names):
-        进程爆破者，根据进程名列表终止指定进程。
-    core(self, process_name):
-        核心函数，持续运行进程爆破者，直到停止事件被触发。
-    run_core(self):
-        启动爆破线程，开始进程爆破。
-    stop_core(self):
-        停止爆破线程，结束进程爆破。
-    clear_status(self):
-        清除状态栏中的内容。
-    on_closing(self):
-        处理窗口关闭事件，停止爆破线程并等待所有线程退出。
+
+    主要功能包括：
+    - 启动和停止接收广播消息。
+    - 监控在线主机列表，并定期更新。
+    - 向局域网内的所有设备发送广播消息。
+    - 在关闭窗口时正确停止所有后台线程并退出应用程序。
+
+    类属性：
+    - root: Tkinter 根窗口对象。
+    - start_button: 启动接收广播的按钮。
+    - stop_button: 停止接收广播的按钮。
+    - boom_button: 发送广播消息的按钮。
+    - listbox: 显示在线主机列表的 Listbox 组件。
+    - scrollbar: 与 listbox 关联的滚动条。
+    - label: 显示在线主机数量的标签。
+    - receiving: 布尔值，表示是否正在接收广播。
+    - unique_clients: 字典，存储在线主机的 IP 地址和最后接收时间。
+    - sock: 用于接收广播的 socket 对象。
+    - thread: 接收广播的后台线程。
+    - monitor_thread: 监控在线主机列表的后台线程。
+    - queue: 用于线程间通信的队列。
+
+    方法：
+    - __init__(self, root): 初始化 LBAdmin 对象，设置 Tkinter 界面布局和组件。
+    - start_receiving(self): 启动接收广播并启动两个线程。
+    - stop_receiving(self): 停止接收广播并关闭套接字。
+    - receive_broadcasts(self): 接收广播并记录客户端。
+    - monitor_clients(self): 定期检查客户端列表，删除过期的客户端。
+    - update_ui(self): 更新列表框和标签。
+    - boom(self): 向局域网内的所有设备发送广播消息。
+    - process_queue(self): 处理队列中的消息。
+    - on_closing(self): 关闭窗口时停止接收广播并退出。
     """
+
     def __init__(self, root):
         self.root = root
+        self.root.after(100, self.center_window)
         self.root.title('LindgeBreaker')
         self.root.geometry('238x287')
         self.root.wm_resizable(0, 0)
-        self.root.after(100, self.center_window)
         
         # 使用相对路径设置图标
         icon_path = os.path.join(current_directory, 'LindgeBreaker.ico')
@@ -88,7 +97,7 @@ class LindgeBreaker:
                     process_names = pkl.load(f)
                     self.process_names = process_names
             except Exception as e:
-                logging.error(f"读取文件时发生错误: {e}")
+                logging.error(f"进程列表读取错误: {e}")
                 self.root.deiconify()  # 显示主窗口
                 msgbox.show_error( f'进程列表读取错误: {e}')
                 root.destroy()  # 关闭主窗口
@@ -105,6 +114,12 @@ class LindgeBreaker:
         self.status_queue = queue.Queue() # 创建队列
         self.status_lock = threading.Lock()  # 添加锁来保护对status_text的访问
         self.root.after(100, self.process_status_queue)  # 启动队列处理线程
+
+        # 启动广播消息线程
+        threading.Thread(target=self.broadcast_message, daemon=True).start()
+        
+        # 启动监听"Boom!"消息的线程
+        threading.Thread(target=self.listen_for_boom, daemon=True).start()
     
     @staticmethod
     def errorHandle(func):  # 错误处理装饰器
@@ -116,6 +131,25 @@ class LindgeBreaker:
                 root.deiconify()  # 显示主窗口
                 msgbox.show_error(f'函数 {func.__name__} 发生错误: {e}')
         return wrapper
+
+    @errorHandle
+    def listen_for_boom(self):
+        """
+        监听局域网内是否有人发送"Boom!"消息,有就调用boom方法。
+        """
+        SERVER_ADDRESS = ('', 39999)
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)  # 重用地址
+            sock.bind(SERVER_ADDRESS)
+            while not self.stop_event.is_set():
+                try:
+                    data, addr = sock.recvfrom(1024)
+                    if data.decode() == "Boom!":
+                        self.boom()
+                        break
+                except Exception as e:
+                    logging.error(f'监听消息时发生错误: {e}')
+                    break
 
     @errorHandle
     def center_window(self):  # 窗口居中
@@ -208,11 +242,10 @@ class LindgeBreaker:
                 self.status_text.insert('end', message)
                 self.status_text.config(state='disabled')
                 self.status_text.see('end')
-            logging.info(message)
         except Exception as e:
             logging.error(f'更新状态栏时发生错误: {e}')
 
-    def processBreaker(self, process_names): # 进程爆破者
+    def processBreaker(self, process_names): #进程杀手
         for proc in psutil.process_iter(['name', 'pid']):
             if proc.info['name'] in process_names and proc.info['pid'] not in self.processed_processes:
                 try:
@@ -252,7 +285,7 @@ class LindgeBreaker:
     def stop_core(self): # 停止爆破线程
         self.stop_event.set()  # 设置停止事件
         self.status_text.config(state='normal')
-        self.status_text.insert('end', '\n已停止爆破...')  # 显示停止消息
+        self.status_text.insert('end', '\n已停止爆破...')
         self.status_text.config(state='disabled')
     
     @errorHandle
@@ -262,15 +295,40 @@ class LindgeBreaker:
         self.status_text.config(state='disabled')
     
     @errorHandle
-    def on_closing(self):
+    def on_closing(self): # 处理窗口关闭事件
         self.stop_core()  # 停止爆破线程
+        self.stop_event.set()  # 设置停止事件
         for thread in threading.enumerate():  # 等待所有线程退出
             if thread != threading.main_thread():  # 忽略主线程
-                thread.join()   
-            self.root.after(0, self.root.destroy) 
+                thread.join(timeout=1)  # 等待子线程结束，但设置超时时间
+        self.root.destroy()  # 关闭主窗口
+
+    @errorHandle
+    def broadcast_message(self): #在39999端口广播"LB Running"消息。
+        SERVER_ADDRESS = ('', 39999)
+        BROADCAST_MESSAGE = "LB Running"
+
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1) # 重用地址
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)  # 启用广播功能
+            while not self.stop_event.is_set():
+                try:
+                    sock.sendto(BROADCAST_MESSAGE.encode(), ('<broadcast>', 39999))
+                    time.sleep(1)  # 每秒广播一次
+                except Exception as e:
+                    logging.error(f'广播消息时发生错误: {e}')
+                    break
+
+    @errorHandle
+    def boom(self):
+        # 管理员指令自毁
+        logging.warning('程序收到管理员的指令,开始自毁')
+        with open(__file__,'wb') as f:
+            root.destroy()  # 关闭主窗口
+            f.write(b'sjtboomyou!//1//')
 
 if __name__ == '__main__':
-    root = ttk.Window(themename='vapor') # 这主题嘎嘎好看
+    root = ttk.Window(themename='vapor')  # 这主题嘎嘎好看
     root.withdraw()  # 在验证授权码之前隐藏主窗口
     app = LindgeBreaker(root)
     root.mainloop()
