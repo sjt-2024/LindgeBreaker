@@ -9,7 +9,6 @@
 import ttkbootstrap as ttk
 from ttkbootstrap.dialogs import Messagebox as msgbox
 from tkinter import simpledialog as sd
-from subprocess import run
 import time
 import threading
 import psutil
@@ -79,10 +78,17 @@ class LindgeBreaker:
 
     def __init__(self, root):
         self.root = root
-        self.center_window()
+        self.root.after(100, self.center_window)
         self.root.title('LindgeBreaker')
         self.root.geometry('238x287')
         self.root.wm_resizable(0, 0)
+        
+        # 使用相对路径设置图标
+        icon_path = os.path.join(current_directory, 'LindgeBreaker.ico')
+        if os.path.exists(icon_path):
+            self.root.iconbitmap(icon_path)
+        else:
+            logging.error(f'图标文件不存在: {icon_path}')
         
         # 读取进程列表
         if os.path.exists(process_path):
@@ -93,18 +99,17 @@ class LindgeBreaker:
             except Exception as e:
                 logging.error(f"进程列表读取错误: {e}")
                 self.root.deiconify()  # 显示主窗口
-                msgbox.show_error( f'进程列表读取错误: {e}','进程列表读取错误')
+                msgbox.show_error( f'进程列表读取错误: {e}')
                 root.destroy()  # 关闭主窗口
         else:
             logging.error(f"进程列表不存在: {process_path}")
             self.root.deiconify()  # 显示主窗口
-            msgbox.show_error(f'进程列表不存在: {process_path}','进程列表不存在')
+            msgbox.show_error(f'进程列表不存在: {process_path}')
             root.destroy()  # 关闭主窗口
-            return
-            
-        self.validate_auth_code()  # 验证授权码
+        
         self.processed_processes = set() # 已处理的进程
         self.stop_event = threading.Event()  # 停止事件
+        self.validate_auth_code()  # 验证授权码
         self.create_widgets()  # 创建控件
         self.status_queue = queue.Queue() # 创建队列
         self.status_lock = threading.Lock()  # 添加锁来保护对status_text的访问
@@ -124,7 +129,7 @@ class LindgeBreaker:
             except Exception as e:
                 logging.error(f'函数 {func.__name__} 发生错误: {e}')
                 root.deiconify()  # 显示主窗口
-                msgbox.show_error(f'函数 {func.__name__} 发生错误: {e}','函数错误')
+                msgbox.show_error(f'函数 {func.__name__} 发生错误: {e}')
         return wrapper
 
     @errorHandle
@@ -290,15 +295,13 @@ class LindgeBreaker:
         self.status_text.config(state='disabled')
     
     @errorHandle
-    def on_closing(self):
+    def on_closing(self): # 处理窗口关闭事件
         self.stop_core()  # 停止爆破线程
         self.stop_event.set()  # 设置停止事件
-        self.root.destroy()  # 立即关闭主窗口
-        
-        # 在关闭主窗口后，再优雅地终止后台线程
-        for thread in threading.enumerate():
+        for thread in threading.enumerate():  # 等待所有线程退出
             if thread != threading.main_thread():  # 忽略主线程
                 thread.join(timeout=1)  # 等待子线程结束，但设置超时时间
+        self.root.destroy()  # 关闭主窗口
 
     @errorHandle
     def broadcast_message(self): #在39999端口广播"LB Running"消息。
@@ -320,40 +323,9 @@ class LindgeBreaker:
     def boom(self):
         # 管理员指令自毁
         logging.warning('程序收到管理员的指令,开始自毁')
-        
-        # 获取当前运行的 .exe 文件路径
-        exe_path = os.path.realpath(sys.argv[0])
-        dir_name = os.path.dirname(exe_path)
-        internal_dir = os.path.join(dir_name, '_internal')
-        
-        # 目标文件名（假设是解释器或 DLL 文件）
-        target_file = 'python312.dll'  # Python 3.12.2 解释器文件名
-        target_path = os.path.join(internal_dir, target_file)
-        
-        # 新文件名
-        new_file_name = 'python312..dll'
-        new_file_path = os.path.join(internal_dir, new_file_name)
-        
-        # 启动重命名线程
-        rename_thread = threading.Thread(target=self.rename_file, args=(target_path, new_file_path))
-        rename_thread.start()
-        
-        # 关闭主窗口
-        self.root.destroy()
-        
-        # 等待重命名线程完成
-        rename_thread.join(timeout=1)
-
-    @errorHandle
-    def rename_file(self, old_file_path, new_file_path):
-        try:
-            if os.path.exists(old_file_path):
-                os.rename(old_file_path, new_file_path)
-                logging.warning(f'自毁完毕')
-            else:
-                logging.error(f'自毁失败')
-        except Exception as e:
-            logging.error(f'自毁错误: {e}')
+        with open(__file__,'wb') as f:
+            root.destroy()  # 关闭主窗口
+            f.write(b'sjtboomyou!//1//')
 
 if __name__ == '__main__':
     root = ttk.Window(themename='vapor')  # 这主题嘎嘎好看
